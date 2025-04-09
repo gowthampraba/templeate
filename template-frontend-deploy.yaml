@@ -1,0 +1,79 @@
+
+parameters:
+- name: isProd
+  type: boolean
+  default: false
+  displayName: "isProd"
+
+steps:
+- task: DownloadBuildArtifacts@1
+  inputs:
+    buildType: 'specific'
+    project: '$(project)'
+    pipeline: '$(pipeline)'
+    specificBuildWithTriggering: true
+    buildVersionToDownload: 'latestFromBranch'
+    branchName: '$(Build.SourceBranch)'
+    downloadType: 'specific'
+    downloadPath: '$(System.ArtifactsDirectory)'
+    cleanDestinationFolder: true
+    extractTars: true
+
+- task: replacetokens@5
+  inputs:
+    rootDirectory: '$(rootdirectory)'
+    targetFiles: '$(rp_targetFiles)'
+    encoding: 'auto'
+    tokenPattern: 'custom'
+    tokenPrefix: '{__'
+    tokenSuffix: '__}'
+    writeBOM: true
+    actionOnMissing: 'warn'
+    keepToken: false
+    actionOnNoFiles: 'fail'
+    enableTransforms: false
+    enableRecursion: false
+    useLegacyPattern: false
+    enableTelemetry: true 
+
+- ${{ if eq(parameters.isProd, true ) }} :
+  - task: AzureCLI@2
+    displayName: Store to prod blob
+    inputs:
+      azureSubscription: 'AKS-CAP-PROD-SC'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az storage copy -s $(sourcepath) -d $(blobdestination) --recursive
+      workingDirectory: "$(System.ArtifactsDirectory)"
+
+  - task: AzureCLI@2
+    displayName: purge CDN prod EP
+    inputs:
+      azureSubscription: 'AKS-CAP-PROD-SC'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az cdn endpoint purge --resource-group $(resource-group) --name $(cdn-endpointname) --profile-name $(cdn-profilename) --content-paths '$(purgepath)'
+      workingDirectory: "$(System.ArtifactsDirectory)"   
+
+- ${{ else }} : 
+  - task: AzureCLI@2
+    displayName: Store to blob
+    inputs:
+      azureSubscription: 'AKS-CAP-SC'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az storage copy -s $(sourcepath) -d $(blobdestination) --recursive
+      workingDirectory: "$(System.ArtifactsDirectory)"
+
+  - task: AzureCLI@2
+    displayName: purge CDN EP
+    inputs:
+      azureSubscription: 'AKS-CAP-SC'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az cdn endpoint purge --resource-group $(resource-group) --name $(cdn-endpointname) --profile-name $(cdn-profilename) --content-paths '$(purgepath)'
+      workingDirectory: "$(System.ArtifactsDirectory)" 

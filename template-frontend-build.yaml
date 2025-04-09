@@ -1,0 +1,103 @@
+parameters:
+- name: unit
+  type: boolean
+  default: false
+  displayName: "Unit Test"
+- name: sonar
+  type: boolean
+  default: false
+  displayName: "sonar"
+- name: app
+  type: string
+  displayName: "app"
+
+variables:
+  - group: ${{ parameters.app }}-build
+
+steps:
+- task: NodeTool@0
+  inputs:
+    versionSpec: '20.x'
+  displayName: ' Node.js Installation '
+
+- task: npmAuthenticate@0
+  inputs:
+    workingFile: './.npmrc'
+
+- task: Npm@1
+  displayName: 'Install Dependency'
+  inputs:
+    command: 'install'
+    workingDir: './'
+
+- task: Npm@1
+  displayName: 'Angular Cli'
+  inputs:
+    command: 'custom'
+    customCommand: 'install -g @angular/cli@16.2.10'
+
+- ${{ if and(eq(parameters.sonar, true ), or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest'))) }} :
+  - task: SonarQubePrepare@5
+    inputs:
+      SonarQube: 'sonar-server'
+      scannerMode: 'CLI'
+      configMode: 'manual'
+      cliProjectKey: '$(projectKey)'
+      cliSources: '.'
+      extraProperties: |
+        sonar.qualitygate.wait=true
+        sonar.sources=src/app
+        sonar.exclusions=**/node_modules/**
+        sonar.exclusions=**/*routing.module.ts
+        sonar.tests=src/app
+        sonar.test.inclusions=**/*.spec.ts
+        sonar.javascript.lcov.reportPaths=$(reportPaths)
+
+  ### Update Sonar.branch.name property ###
+  - task: Bash@3
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo $SONARQUBE_SCANNER_PARAMS
+        params=$(echo $SONARQUBE_SCANNER_PARAMS | sed -e 's/[^\]sonar\.branch\.name[^\,]*\,//' -e 's/[^\]sonar\.pullrequest\.key[^\,]*\,//' -e 's/[^\]sonar\.pullrequest\.branch[^\,]*\,//' -e 's/[^\]sonar\.pullrequest\.base[^\,]*\,//' )
+        echo "##vso[task.setvariable variable=SONARQUBE_SCANNER_PARAMS;]$params"
+
+- script: |
+    ng build
+  displayName: 'Application Build'
+
+- ${{ if and(eq(parameters.unit, true ), or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest'))) }} :
+  - script: |
+      ng test --code-coverage=true --browsers ChromeHeadless --reporters junit --watch=false
+    displayName: 'Test'
+  
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+     testResultsFormat: 'JUnit'
+     testResultsFiles: '**/test*.xml'
+    displayName: 'publish unit test results'
+
+- ${{ if and(eq(parameters.sonar, true ), or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest'))) }} :
+  - task: SonarQubeAnalyze@5
+    inputs:
+      jdkversion: 'JAVA_HOME_11_X64'
+  
+  - task: SonarQubePublish@5
+    inputs:
+      pollingTimeoutSec: '300'
+
+- ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
+  - task: CopyFiles@2
+    inputs:
+      SourceFolder: './dist'
+      Contents: '**'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)/dist'
+      CleanTargetFolder: true
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'drop'
+      publishLocation: 'Container'
+      StoreAsTar: true

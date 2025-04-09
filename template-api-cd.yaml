@@ -1,0 +1,40 @@
+steps:
+- task: replacetokens@5
+  displayName: replacetokens helm values and chart file
+  inputs:
+    rootDirectory: './devops/helm'
+    targetFiles: '*.yaml'
+    encoding: 'auto'
+    tokenPattern: 'custom'
+    tokenPrefix: '{__'
+    tokenSuffix: '__}'
+    writeBOM: true
+    actionOnMissing: 'warn'
+    keepToken: false
+    actionOnNoFiles: 'fail'
+    enableTransforms: false
+    enableRecursion: false
+    useLegacyPattern: false
+    enableTelemetry: true
+
+- task: Bash@3
+  displayName: 'Helm Package and Push to ACR'
+  inputs:
+    targetType: 'inline'
+    script: |
+      helm package .
+      helm registry login $(containerRegistry) \
+      --username $(acrusrname) \
+      --password $(acrpassword)
+      helm push ./$(chartname)-1.0.$(version).tgz oci://$(containerRegistry)/$(chartrepository)/
+      helm registry logout $(containerRegistry)
+    workingDirectory: './devops/helm'
+
+- task: Bash@3
+  displayName: 'ArgoCD Deployment'
+  inputs:
+    targetType: 'inline'
+    script: |
+      argocd app set $(argocdapp) --revision "1.0.$(version)" --server $(argocdserver) --auth-token "$(argocdapitoken)" --grpc-web
+      argocd app sync $(argocdapp) --server $(argocdserver) --auth-token "$(argocdapitoken)" --grpc-web
+      argocd app wait $(argocdapp) --health --server $(argocdserver) --auth-token "$(argocdapitoken)" --grpc-web

@@ -1,0 +1,40 @@
+parameters:
+- name: app
+  type: string
+  displayName: "app"
+- name: unit
+  type: boolean
+  default: false
+  displayName: "Unit Test"
+- name: sonar
+  type: boolean
+  default: false
+- name: nugetpush
+  type: boolean
+  default: false
+  displayName: "nugetpush"
+
+stages:
+- stage: Develop
+  condition: or(or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest')), contains(variables['build.SourceBranch'], 'feature'), startsWith(variables['build.SourceBranch'], 'hotfix'))
+  variables:
+  - group: ${{ parameters.app }}-develop
+  jobs:
+  - job: Develop
+    steps:
+    - template: template-backend-ci.yaml
+      parameters:
+       unit: ${{ parameters.unit }}
+       sonar: ${{ parameters.sonar }}
+       nugetpush: ${{ parameters.nugetpush }}
+
+- stage: Release
+  condition: contains(variables['build.SourceBranch'], 'release')
+  variables:
+  - group: ${{ parameters.app }}-release
+  jobs:
+  - job: Release
+    steps:
+    - template: template-backend-ci.yaml
+      parameters:
+        isRelease: true

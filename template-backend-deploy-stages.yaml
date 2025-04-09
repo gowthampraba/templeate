@@ -1,0 +1,78 @@
+parameters:
+- name: app
+  type: string
+  displayName: "app"
+
+stages:
+- stage: Dev
+  condition: or(or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest')), contains(variables['build.SourceBranch'], 'feature'), startsWith(variables['build.SourceBranch'], 'hotfix'))
+#  condition: or(or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest')), startsWith(variables['build.SourceBranch'], 'hotfix'))
+  variables:
+  - group: ${{ parameters.app }}-dev
+  jobs:
+  - job: dev_cd
+    steps:
+    - template: template-backend-cd.yaml
+
+- stage: QA
+  condition: contains(variables['build.SourceBranch'], 'release')
+  variables:
+  - group: ${{ parameters.app }}-qa
+  jobs:
+  - job: qa_cd
+    steps:
+    - template: template-backend-cd.yaml
+
+- stage: SIT_Approval
+  dependsOn: QA
+  condition: succeeded('QA')
+  jobs:
+  - deployment: SIT_Approval
+    displayName: SIT_approval 
+    environment: SIT
+
+- stage: SIT
+  dependsOn: SIT_Approval
+  condition: succeeded('SIT_Approval')
+  variables:
+  - group: ${{ parameters.app }}-sit
+  jobs:
+  - job: sit_cd
+    steps:
+    - template: template-backend-cd.yaml
+
+- stage: UAT_Approval
+  dependsOn: SIT
+  condition: succeeded('SIT')
+  jobs:
+  - deployment: UAT_Approval
+    displayName: UAT_approval 
+    environment: UAT
+
+- stage: UAT
+  dependsOn: UAT_Approval
+  condition: succeeded('UAT_Approval') 
+  variables:
+  - group: ${{ parameters.app }}-uat
+  jobs:
+  - job: uat_cd
+    steps:
+    - template: template-backend-cd.yaml
+
+- stage: Prod_Approval
+  dependsOn: UAT
+  condition: succeeded('UAT')
+  jobs:
+  - deployment: Prod_Approval
+    displayName: Prod_Approval 
+    environment: prod
+
+- stage: Prod
+  dependsOn: Prod_Approval
+  condition: succeeded('Prod_Approval')  
+  variables:
+  - group: ${{ parameters.app }}-prod
+  jobs:
+  - job: prod_cd
+    steps:
+    - template: template-backend-cd.yaml

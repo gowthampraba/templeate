@@ -1,0 +1,153 @@
+parameters:
+- name: unit
+  type: boolean
+  default: false
+  displayName: "Unit Test"
+- name: sonar
+  type: boolean
+  default: false
+- name: nugetpush
+  type: boolean
+  default: false
+  displayName: "nugetpush"
+- name: isRelease
+  type: boolean
+  default: false
+  displayName: "isRelease"
+
+steps:
+- task: UseDotNet@2
+  inputs:
+    packageType: 'sdk'
+    version: '6.x'
+    includePreviewVersions: true
+ 
+
+- task: DotNetCoreCLI@2
+  inputs:
+    command: 'restore'
+    projects: '**/*.csproj'
+    feedsToUse: 'select'
+    vstsFeed: "$(feed)"
+
+- ${{ if or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest')) }} : 
+  - task: SonarQubePrepare@5
+    inputs:
+      SonarQube: 'sonar-server'
+      scannerMode: 'MSBuild'
+      projectKey: '$(projectKey)'
+      extraProperties: |
+         sonar.cs.opencover.reportsPaths=$(reportPaths)
+         sonar.verbose=true
+
+    ### Update Sonar.branch.name property ###
+  - task: Bash@3
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo $SONARQUBE_SCANNER_PARAMS
+        params=$(echo $SONARQUBE_SCANNER_PARAMS | sed -e 's/[^\]sonar\.branch\.name[^\,]*\,//' -e 's/[^\]sonar\.pullrequest\.key[^\,]*\,//' -e 's/[^\]sonar\.pullrequest\.branch[^\,]*\,//' -e 's/[^\]sonar\.pullrequest\.base[^\,]*\,//' )
+        echo "##vso[task.setvariable variable=SONARQUBE_SCANNER_PARAMS;]$params"
+
+- task: DotNetCoreCLI@2
+  displayName: Dotnet Build
+  inputs:
+    command: 'build'
+    projects: |
+        **/*.csproj
+        !**/*Tests/*.csproj
+    arguments: '--configuration $(BuildConfiguration)'
+
+- ${{ if and(eq(parameters.unit, true ), or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest'))) }} : 
+  - task: DotNetCoreCLI@2
+    displayName: Dotnet Unittest
+    inputs:
+     command: 'test'
+     projects: '**/*Tests/*.csproj'
+     publishTestResults: true
+     arguments: '--configuration $(BuildConfiguration) --logger "trx;logfilename=testResults.trx" --collect:"XPlat Code Coverage" -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover'
+     testRunTitle: 'Unittest'
+
+- ${{ if and(eq(parameters.sonar, true ), or(eq(variables['build.SourceBranchName'], 'develop'), eq(variables['Build.Reason'], 'PullRequest'))) }} : 
+  - task: SonarQubeAnalyze@5
+    inputs:
+      jdkversion: 'JAVA_HOME_11_X64'
+  
+  - task: SonarQubePublish@5
+    inputs:
+      pollingTimeoutSec: '300'
+
+  - task: PublishCodeCoverageResults@2
+    inputs:
+      summaryFileLocation: '/home/azureuser/myagent/_work/_temp/**/coverage.opencover.xml'
+      pathToSources: '$(System.DefaultWorkingDirectory)/codecoverage-result/'
+      failIfCoverageEmpty: true
+
+- ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
+  - ${{ if and( eq(parameters.nugetpush, true ), eq(variables['Build.Repository.Name'], 'Archkey-User-Management-Services')) }}: 
+    - task: NuGetCommand@2
+      inputs:
+        command: 'pack'
+        packagesToPack: "$(packagesToPack)"
+        configuration: '$(buildConfiguration)'
+        versioningScheme: 'byPrereleaseNumber'
+        majorVersion: '1'
+        minorVersion: '0'
+        patchVersion: '2'
+
+    - task: NuGetCommand@2
+      inputs:
+        command: 'push'
+        packagesToPush: '$(Build.ArtifactStagingDirectory)/**/*.nupkg;!$(Build.ArtifactStagingDirectory)/**/*.symbols.nupkg'
+        nuGetFeedType: 'internal'
+        publishVstsFeed: "$(feed)"
+
+  - task: DotNetCoreCLI@2
+    displayName: Dotnet Publish
+    condition: or(eq(variables['build.SourceBranchName'], 'develop'), contains(variables['build.SourceBranch'], 'feature'), contains(variables['build.SourceBranch'], 'release'))
+    inputs:
+      command: 'publish'
+      publishWebProjects: true
+      arguments: '--configuration $(BuildConfiguration)'
+      zipAfterPublish: false
+      modifyOutputPath: false  
+
+  - task: Docker@2
+    displayName: 'Docker build and push to ACR'
+    inputs:
+      containerRegistry: 'dev-registry'
+      repository: $(repository)
+      command: 'buildAndPush'
+      Dockerfile: './Dockerfile'
+
+  - ${{ if eq(parameters.isRelease, true ) }} :
+
+    - task: Bash@3
+      displayName: 'Docker tag to prod ACR'
+      inputs:
+        targetType: 'inline'
+        script: |
+          docker tag $(containerRegistry)/$(repository):$(Build.BuildId) $(prodcontainerRegistry)/$(repository):$(Build.BuildId)
+
+    - task: Docker@2
+      displayName: 'Docker push to prod ACR'
+      inputs:
+        containerRegistry: 'release-registry'
+        repository: $(repository)
+        command: 'Push'
+    - task: Bash@3
+      displayName: 'post build'
+      condition: always()
+      inputs:
+        targetType: 'inline'
+        script: |
+          docker rmi $(prodcontainerRegistry)/$(repository):$(Build.BuildId)
+  
+  - task: Bash@3
+    displayName: 'Post Build'
+    condition: always()
+    inputs:
+      targetType: 'inline'
+      script: |
+        docker rmi $(containerRegistry)/$(repository):$(Build.BuildId)
+          
